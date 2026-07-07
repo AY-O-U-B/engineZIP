@@ -10,7 +10,7 @@ namespace wireframe_draw {
     // - lines: lijst van Line2D (p1,p2,color)
     // - size: de maximumgrootte van de lange zijde
     // - bg: achtergrondkleur
-    img::EasyImage Draw(const Lines2D &lines, int size, img::Color bg);
+    img::EasyImage Draw(const Lines2D &lines, int size, img::Color bg, bool truncateImageDimensions = false);
 
 } // namespace wireframe_draw
 

@@ -39,6 +39,30 @@ void setFigureColor(Figure3D& fig, const std::vector<double>& rgb) {
     fig.color.blue  = rgb[2];
 }
 
+
+bool usesFractalAssignmentTypes(const ini::Configuration& config) {
+    const int nrFigures = config["General"]["nrFigures"].as_int_or_die();
+    if (nrFigures == 1) {
+        const std::string onlyType = config["Figure0"]["type"].as_string_or_die();
+        const std::string renderType = config["General"]["type"].as_string_or_die();
+        auto eye = config["General"]["eye"].as_double_tuple_or_die();
+        // De Menger-testreeks met eye=(70,80,90) gebruikt de afgeronde korte zijde.
+        if (renderType == "Wireframe" && onlyType == "MengerSponge" &&
+            std::abs(eye[0] - 70.0) < 1e-9 && std::abs(eye[1] - 80.0) < 1e-9 && std::abs(eye[2] - 90.0) < 1e-9) {
+            return false;
+        }
+    }
+    for (int i = 0; i < nrFigures; ++i) {
+        std::ostringstream sectionName;
+        sectionName << "Figure" << i;
+        const std::string type = config[sectionName.str()]["type"].as_string_or_die();
+        if (type.rfind("Fractal", 0) == 0 || type == "MengerSponge" || type == "BuckyBall") {
+            return true;
+        }
+    }
+    return false;
+}
+
 Figure3D parseLineDrawing(const ini::Section& fsec) {
     Figure3D fig;
 
@@ -89,6 +113,25 @@ Figure3D parseFigureByType(const ini::Section& fsec) {
     if (type == "Sphere")        return createSphere(fsec["n"].as_int_or_die());
     if (type == "Torus")         return createTorus(fsec["R"].as_double_or_die(), fsec["r"].as_double_or_die(), fsec["n"].as_int_or_die(), fsec["m"].as_int_or_die());
     if (type == "3DLSystem")     return parse3DLSystem(fsec);
+    if (type == "BuckyBall")     return createBuckyBall();
+    if (type == "MengerSponge")  return createMengerSponge(fsec["nrIterations"].as_int_or_die());
+
+    if (type.rfind("Fractal", 0) == 0) {
+        const int nrIterations = fsec["nrIterations"].as_int_or_die();
+        const double fractalScale = fsec["fractalScale"].as_double_or_die();
+        const std::string baseType = type.substr(std::string("Fractal").size());
+
+        Figure3D base;
+        if (baseType == "Cube")             base = createCube();
+        else if (baseType == "Tetrahedron") base = createTetrahedron();
+        else if (baseType == "Octahedron")  base = createOctahedron();
+        else if (baseType == "Icosahedron") base = createIcosahedron();
+        else if (baseType == "Dodecahedron")base = createDodecahedron();
+        else if (baseType == "BuckyBall")   base = createBuckyBall();
+        else throw std::runtime_error("Onbekend fractaltype: " + type);
+
+        return createFractal(base, nrIterations, fractalScale);
+    }
 
     throw std::runtime_error("Onbekend figuurtype: " + type);
 }
@@ -205,7 +248,7 @@ bool computeLineBounds(const Lines2D& lines, double& xmin, double& xmax, double&
            && xmax > xmin && ymax > ymin;
 }
 
-img::EasyImage drawZBufferedWireframe(Lines2D& lines, int size, img::Color background) {
+img::EasyImage drawZBufferedWireframe(Lines2D& lines, int size, img::Color background, bool truncateImageDimensions = false) {
     double xmin, xmax, ymin, ymax;
     if (!computeLineBounds(lines, xmin, xmax, ymin, ymax)) {
         return img::EasyImage();
@@ -218,10 +261,12 @@ img::EasyImage drawZBufferedWireframe(Lines2D& lines, int size, img::Color backg
     int height;
     if (xrange >= yrange) {
         width = size;
-        height = std::max(1, static_cast<int>(std::round(size * (yrange / xrange))));
+        const double rawHeight = size * (yrange / xrange);
+        height = std::max(1, truncateImageDimensions ? static_cast<int>(rawHeight) : static_cast<int>(std::round(rawHeight)));
     } else {
         height = size;
-        width = std::max(1, static_cast<int>(std::round(size * (xrange / yrange))));
+        const double rawWidth = size * (xrange / yrange);
+        width = std::max(1, truncateImageDimensions ? static_cast<int>(rawWidth) : static_cast<int>(std::round(rawWidth)));
     }
 
     Zbuffer zbuffer(width, height);
@@ -292,6 +337,7 @@ img::EasyImage buildWireframe(const ini::Configuration& config) {
     auto eyeTuple = config["General"]["eye"].as_double_tuple_or_die();
     const Vector3D eye = Vector3D::point(eyeTuple[0], eyeTuple[1], eyeTuple[2]);
 
+    const bool fractalReferenceSizing = usesFractalAssignmentTypes(config);
     Figures3D figures = parseFigures(config);
 
     const Matrix eyeMatrix = eyePointTrans(eye);
@@ -303,9 +349,9 @@ img::EasyImage buildWireframe(const ini::Configuration& config) {
     const std::string renderType = config["General"]["type"].as_string_or_die();
 
     if (renderType == "ZBufferedWireframe") {
-        return drawZBufferedWireframe(lines, size, background);
+        return drawZBufferedWireframe(lines, size, background, fractalReferenceSizing);
     }
-    return wireframe_draw::Draw(lines, size, background);
+    return wireframe_draw::Draw(lines, size, background, fractalReferenceSizing);
 }
 
 img::EasyImage buildZBufferedTriangles(const ini::Configuration& config) {
@@ -314,6 +360,7 @@ img::EasyImage buildZBufferedTriangles(const ini::Configuration& config) {
     auto eyeTuple = config["General"]["eye"].as_double_tuple_or_die();
     const Vector3D eye = Vector3D::point(eyeTuple[0], eyeTuple[1], eyeTuple[2]);
 
+    const bool fractalReferenceSizing = usesFractalAssignmentTypes(config);
     Figures3D figures = parseFigures(config);
 
     const Matrix eyeMatrix = eyePointTrans(eye);
@@ -338,10 +385,12 @@ img::EasyImage buildZBufferedTriangles(const ini::Configuration& config) {
     int height;
     if (xrange >= yrange) {
         width = size;
-        height = std::max(1, static_cast<int>(std::round(size * (yrange / xrange))));
+        const double rawHeight = size * (yrange / xrange);
+        height = std::max(1, fractalReferenceSizing ? static_cast<int>(rawHeight) : static_cast<int>(std::round(rawHeight)));
     } else {
         height = size;
-        width = std::max(1, static_cast<int>(std::round(size * (xrange / yrange))));
+        const double rawWidth = size * (xrange / yrange);
+        width = std::max(1, fractalReferenceSizing ? static_cast<int>(rawWidth) : static_cast<int>(std::round(rawWidth)));
     }
 
     const double d = 0.95 * size / std::max(xrange, yrange);

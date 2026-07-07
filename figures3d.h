@@ -40,4 +40,13 @@ Figure3D createSphere(int n);
 /// Genereert een torus rond Z-as, afstand R, buisstraal r, n radial, m tubal punten
 Figure3D createTorus(double R, double r, int n, int m);
 
+/// Genereert een buckyball (truncated icosahedron) vanuit een icosahedron
+Figure3D createBuckyBall();
+
+/// Genereert een generieke 3D-fractaal op basis van een figuur
+Figure3D createFractal(const Figure3D& base, int nrIterations, double fractalScale);
+
+/// Genereert een Menger spons met nrIterations iteraties
+Figure3D createMengerSponge(int nrIterations);
+
 #endif //FIGURES3D_H

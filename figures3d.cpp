@@ -1,5 +1,6 @@
 #include "figures3d.h"
 #include <cmath>
+#include <algorithm>
 #include <map>
 #include <utility>
 #include <vector>
@@ -296,4 +297,221 @@ Figure3D createTorus(double R, double r, int n, int m) {
     }
 
     return torus;
+}
+
+namespace {
+
+void appendFigureWithOffset(Figure3D& target, const Figure3D& source, double tx, double ty, double tz) {
+    const int offset = static_cast<int>(target.points.size());
+    target.points.reserve(target.points.size() + source.points.size());
+    for (const Vector3D& p : source.points) {
+        target.points.push_back(Vector3D::point(p.x + tx, p.y + ty, p.z + tz));
+    }
+
+    target.faces.reserve(target.faces.size() + source.faces.size());
+    for (const Face& face : source.faces) {
+        Face shifted;
+        shifted.point_indexes.reserve(face.point_indexes.size());
+        for (int index : face.point_indexes) {
+            shifted.point_indexes.push_back(index + offset);
+        }
+        target.faces.push_back(shifted);
+    }
+}
+
+Figure3D scaledFigure(const Figure3D& source, double factor) {
+    Figure3D scaled = source;
+    for (Vector3D& p : scaled.points) {
+        p = Vector3D::point(p.x * factor, p.y * factor, p.z * factor);
+    }
+    return scaled;
+}
+
+std::vector<int> sortedIncidentBuckyVertices(
+    const Vector3D& center,
+    const std::vector<std::pair<Vector3D, int>>& vertices
+) {
+    if (vertices.size() < 3) {
+        std::vector<int> result;
+        for (const auto& entry : vertices) {
+            result.push_back(entry.second);
+        }
+        return result;
+    }
+
+    Vector3D normal = Vector3D::vector(center.x, center.y, center.z);
+    normal.normalise();
+
+    Vector3D u = Vector3D::vector(vertices[0].first.x - center.x,
+                                  vertices[0].first.y - center.y,
+                                  vertices[0].first.z - center.z);
+    // Projecteer u op het raakvlak, zodat atan2 stabiel wordt.
+    const double dotUN = Vector3D::dot(u, normal);
+    u = Vector3D::vector(u.x - dotUN * normal.x, u.y - dotUN * normal.y, u.z - dotUN * normal.z);
+    if (u.length() < 1e-12) {
+        u = Vector3D::vector(1, 0, 0);
+    }
+    u.normalise();
+    Vector3D v = Vector3D::cross(normal, u);
+    v.normalise();
+
+    std::vector<std::pair<double, int>> angles;
+    angles.reserve(vertices.size());
+    for (const auto& entry : vertices) {
+        Vector3D r = Vector3D::vector(entry.first.x - center.x,
+                                      entry.first.y - center.y,
+                                      entry.first.z - center.z);
+        const double angle = std::atan2(Vector3D::dot(r, v), Vector3D::dot(r, u));
+        angles.push_back({angle, entry.second});
+    }
+
+    std::sort(angles.begin(), angles.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+
+    std::vector<int> result;
+    result.reserve(angles.size());
+    for (const auto& entry : angles) {
+        result.push_back(entry.second);
+    }
+    return result;
+}
+
+} // namespace
+
+Figure3D createBuckyBall() {
+    const Figure3D ico = createIcosahedron();
+    Figure3D bucky;
+
+    std::map<std::pair<int, int>, int> directedEdgePoint;
+    std::vector<std::vector<std::pair<Vector3D, int>>> incident(ico.points.size());
+
+    auto addDirectedPoint = [&](int from, int to) -> int {
+        const std::pair<int, int> key(from, to);
+        const auto found = directedEdgePoint.find(key);
+        if (found != directedEdgePoint.end()) {
+            return found->second;
+        }
+
+        const Vector3D& A = ico.points[from];
+        const Vector3D& B = ico.points[to];
+        Vector3D P = Vector3D::point((2.0 * A.x + B.x) / 3.0,
+                                     (2.0 * A.y + B.y) / 3.0,
+                                     (2.0 * A.z + B.z) / 3.0);
+        const int index = static_cast<int>(bucky.points.size());
+        bucky.points.push_back(P);
+        directedEdgePoint[key] = index;
+        incident[from].push_back({P, index});
+        return index;
+    };
+
+    // Maak per ribbe twee punten: op 1/3 en 2/3 van de ribbe.
+    for (const Face& face : ico.faces) {
+        if (face.point_indexes.size() != 3) {
+            continue;
+        }
+        for (int i = 0; i < 3; ++i) {
+            const int a = face.point_indexes[i];
+            const int b = face.point_indexes[(i + 1) % 3];
+            addDirectedPoint(a, b);
+            addDirectedPoint(b, a);
+        }
+    }
+
+    // De 20 oorspronkelijke driehoeksvlakken worden zeshoeken.
+    for (const Face& face : ico.faces) {
+        const int a = face.point_indexes[0];
+        const int b = face.point_indexes[1];
+        const int c = face.point_indexes[2];
+        bucky.faces.push_back(makeFace({
+            directedEdgePoint[{a, b}], directedEdgePoint[{b, a}],
+            directedEdgePoint[{b, c}], directedEdgePoint[{c, b}],
+            directedEdgePoint[{c, a}], directedEdgePoint[{a, c}]
+        }));
+    }
+
+    // Rond elk oorspronkelijk hoekpunt ontstaat een vijfhoek.
+    for (size_t v = 0; v < ico.points.size(); ++v) {
+        bucky.faces.push_back(makeFace(sortedIncidentBuckyVertices(ico.points[v], incident[v])));
+    }
+
+    return bucky;
+}
+
+Figure3D createFractal(const Figure3D& base, int nrIterations, double fractalScale) {
+    if (nrIterations <= 0 || base.points.empty() || fractalScale == 0.0) {
+        return base;
+    }
+
+    const int h = static_cast<int>(base.points.size());
+    Figure3D current = base;
+
+    for (int iteration = 1; iteration <= nrIterations; ++iteration) {
+        const double factor = 1.0 / std::pow(fractalScale, iteration);
+        const Figure3D addBase = scaledFigure(base, factor);
+        Figure3D next;
+
+        next.points.reserve(current.points.size() * base.points.size());
+        next.faces.reserve(current.points.size() * base.faces.size());
+
+        for (size_t k = 0; k < current.points.size(); ++k) {
+            const int j = static_cast<int>(k % h);
+            const Vector3D& targetPoint = current.points[k];
+            const Vector3D& anchorPoint = addBase.points[j];
+            appendFigureWithOffset(next, addBase,
+                                   targetPoint.x - anchorPoint.x,
+                                   targetPoint.y - anchorPoint.y,
+                                   targetPoint.z - anchorPoint.z);
+        }
+
+        current = std::move(next);
+    }
+
+    current.color = base.color;
+    return current;
+}
+
+Figure3D createMengerSponge(int nrIterations) {
+    struct Center {
+        double x;
+        double y;
+        double z;
+    };
+
+    std::vector<Center> centers = {{0.0, 0.0, 0.0}};
+    double halfSize = 1.0;
+
+    for (int iter = 0; iter < nrIterations; ++iter) {
+        const double childHalfSize = halfSize / 3.0;
+        const double step = 2.0 * childHalfSize;
+        std::vector<Center> next;
+        next.reserve(centers.size() * 20);
+
+        for (const Center& c : centers) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dz = -1; dz <= 1; ++dz) {
+                        const int zeros = (dx == 0 ? 1 : 0) + (dy == 0 ? 1 : 0) + (dz == 0 ? 1 : 0);
+                        if (zeros <= 1) {
+                            next.push_back({c.x + dx * step, c.y + dy * step, c.z + dz * step});
+                        }
+                    }
+                }
+            }
+        }
+
+        centers = std::move(next);
+        halfSize = childHalfSize;
+    }
+
+    const Figure3D cubePart = scaledFigure(createCube(), halfSize);
+    Figure3D sponge;
+    sponge.points.reserve(centers.size() * cubePart.points.size());
+    sponge.faces.reserve(centers.size() * cubePart.faces.size());
+
+    for (const Center& c : centers) {
+        appendFigureWithOffset(sponge, cubePart, c.x, c.y, c.z);
+    }
+
+    return sponge;
 }

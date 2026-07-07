@@ -6,7 +6,7 @@
 
 namespace wireframe_draw {
 
-img::EasyImage Draw(const Lines2D &lines, int size, img::Color bg) {
+img::EasyImage Draw(const Lines2D &lines, int size, img::Color bg, bool truncateImageDimensions) {
     // 1) compute bounding box
     double xmin =  std::numeric_limits<double>::infinity();
     double xmax = -std::numeric_limits<double>::infinity();
@@ -33,10 +33,12 @@ img::EasyImage Draw(const Lines2D &lines, int size, img::Color bg) {
     int width, height;
     if (xrange >= yrange) {
         width  = size;
-        height = int(std::round(size * (yrange / xrange)));
+        const double rawHeight = size * (yrange / xrange);
+        height = truncateImageDimensions ? static_cast<int>(rawHeight) : int(std::round(rawHeight));
     } else {
         height = size;
-        width  = int(std::round(size * (xrange / yrange)));
+        const double rawWidth = size * (xrange / yrange);
+        width  = truncateImageDimensions ? static_cast<int>(rawWidth) : int(std::round(rawWidth));
     }
 
 
@@ -61,8 +63,8 @@ img::EasyImage Draw(const Lines2D &lines, int size, img::Color bg) {
 
     // 5) tekenen
     for (auto &L : lines) {
-        auto tx = [&](double x){ return (x - xmid)*d + imagex / 2.0; };
-        auto ty = [&](double y){ return (y - ymid)*d + imagey / 2.0; };
+        auto tx = [&](double x){ return (x - xmid)*d + width / 2.0; };
+        auto ty = [&](double y){ return (y - ymid)*d + height / 2.0; };
 
         int x1 = int(std::round(std::clamp(tx(L.p1.x), 0.0, double(width-1))));
         int y1 = int(std::round(std::clamp(ty(L.p1.y), 0.0, double(height-1))));

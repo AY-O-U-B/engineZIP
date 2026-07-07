@@ -2,51 +2,37 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <iostream>
+#include <vector>
 
-/**
- * @brief Projecteert een 3D punt naar 2D schermcoördinaten met Z-waarde.
- * 
- * @param pt  Punt in eye-coördinaten (Vector3D)
- * @param d   Schaalfactor
- * @param dx  X-verschuiving
- * @param dy  Y-verschuiving
- * @param x_out  Output: X-schermcoördinaat
- * @param y_out  Output: Y-schermcoördinaat
- * @param z_out  Output: Z-waarde (voor Z-buffer, 1/z)
- * @return true als projectie geldig is, false bij delen door nul
- */
-static bool projectPointToScreen(
-    const Vector3D& pt,
-    double d, double dx, double dy,
-    double* x_out, double* y_out, double* z_out
-) {
-    // Check voor delen door nul
-    if (std::abs(pt.z) < 1e-8) {
+namespace {
+
+struct ScreenPoint {
+    double x;
+    double y;
+};
+
+bool projectPointToScreen(const Vector3D& pt, double d, double dx, double dy, ScreenPoint& out) {
+    if (std::abs(pt.z) < 1e-12) {
         return false;
     }
-    
-    // Projectie: x' = d * x / -z
-    double x_proj = d * pt.x / (-pt.z);
-    double y_proj = d * pt.y / (-pt.z);
-    
-    // Transformeer naar schermcoördinaten
-    *x_out = x_proj + dx;
-    *y_out = y_proj + dy;
-    
-    // Z-buffer waarde (1/z voor correcte interpolatie)
-    *z_out = 1.0 / pt.z;
-    
-    return true;
+    out.x = d * pt.x / (-pt.z) + dx;
+    out.y = d * pt.y / (-pt.z) + dy;
+    return std::isfinite(out.x) && std::isfinite(out.y);
 }
 
-/**
- * @brief Hulpstructuur voor een geprojecteerd punt.
- */
-struct ScreenPoint {
-    double x, y;      // Schermcoördinaten
-    double inv_z;     // 1/z voor Z-buffer interpolatie
-};
+bool edgeIntersectionX(const ScreenPoint& P, const ScreenPoint& Q, int y, double& xOut) {
+    if (std::abs(P.y - Q.y) < 1e-12) {
+        return false;
+    }
+    const double yD = static_cast<double>(y);
+    if ((yD - P.y) * (yD - Q.y) > 0.0) {
+        return false;
+    }
+    xOut = Q.x + (P.x - Q.x) * ((yD - Q.y) / (P.y - Q.y));
+    return std::isfinite(xOut);
+}
+
+} // namespace
 
 void draw_zbuf_triag(
     Zbuffer& zbuffer,
@@ -59,88 +45,60 @@ void draw_zbuf_triag(
     double dy,
     const FloatColor& color
 ) {
-    // 1. Projecteer de drie hoekpunten
     ScreenPoint pA, pB, pC;
-    
-    if (!projectPointToScreen(A, d, dx, dy, &pA.x, &pA.y, &pA.inv_z)) return;
-    if (!projectPointToScreen(B, d, dx, dy, &pB.x, &pB.y, &pB.inv_z)) return;
-    if (!projectPointToScreen(C, d, dx, dy, &pC.x, &pC.y, &pC.inv_z)) return;
-    
-    // 2. Converteer naar img::Color
-    img::Color img_color(
-        static_cast<uint8_t>(std::round(std::clamp(color.red, 0.0, 1.0) * 255)),
-        static_cast<uint8_t>(std::round(std::clamp(color.green, 0.0, 1.0) * 255)),
-        static_cast<uint8_t>(std::round(std::clamp(color.blue, 0.0, 1.0) * 255))
-    );
-    
-    // 3. Bepaal de bounding box (in integers)
-    int ymin = static_cast<int>(std::floor(std::min({pA.y, pB.y, pC.y})));
-    int ymax = static_cast<int>(std::ceil(std::max({pA.y, pB.y, pC.y})));
-    
-    // Clamp aan afbeeldingsgrenzen
-    int img_height = static_cast<int>(image.get_height());
-    int img_width = static_cast<int>(image.get_width());
-    
-    ymin = std::max(0, ymin);
-    ymax = std::min(img_height - 1, ymax);
-    
-    // 4. Bereken de oppervlakte van de driehoek (voor barycentrische coördinaten)
-    // Area = 0.5 * |det| waar det = (B-A) x (C-A) in 2D
-    double denom = (pB.y - pC.y) * (pA.x - pC.x) + (pC.x - pB.x) * (pA.y - pC.y);
-    
-    if (std::abs(denom) < 1e-8) {
-        // Driehoek is gedegenereerd (alle punten op één lijn)
+    if (!projectPointToScreen(A, d, dx, dy, pA)) return;
+    if (!projectPointToScreen(B, d, dx, dy, pB)) return;
+    if (!projectPointToScreen(C, d, dx, dy, pC)) return;
+
+    const int width = static_cast<int>(image.get_width());
+    const int height = static_cast<int>(image.get_height());
+    if (width <= 0 || height <= 0) return;
+
+    const int yMin = std::max(0, static_cast<int>(std::round(std::min({pA.y, pB.y, pC.y}) + 0.5)));
+    const int yMax = std::min(height - 1, static_cast<int>(std::round(std::max({pA.y, pB.y, pC.y}) - 0.5)));
+    if (yMin > yMax) return;
+
+    const Vector3D AB = B - A;
+    const Vector3D AC = C - A;
+    const Vector3D w = Vector3D::cross(AB, AC);
+    const double k = Vector3D::dot(w, A);
+    if (std::abs(k) < 1e-12) {
         return;
     }
-    
-    // 5. Scanline algorithm: voor elke y-rij
-    for (int yi = ymin; yi <= ymax; ++yi) {
-        double y = yi + 0.5;  // Pixel center
-        
-        // Bepaal xmin en xmax voor deze scanline
-        double xmin_scan = std::numeric_limits<double>::infinity();
-        double xmax_scan = -std::numeric_limits<double>::infinity();
-        
-        // Check intersecties met de drie edges: AB, BC, CA
-        auto checkEdge = [&](const ScreenPoint& p1, const ScreenPoint& p2) {
-            if ((p1.y <= y && y < p2.y) || (p2.y <= y && y < p1.y)) {
-                // Edge kruist deze scanline
-                double t = (y - p1.y) / (p2.y - p1.y);
-                double x_intersect = p1.x + t * (p2.x - p1.x);
-                xmin_scan = std::min(xmin_scan, x_intersect);
-                xmax_scan = std::max(xmax_scan, x_intersect);
-            }
-        };
-        
-        checkEdge(pA, pB);
-        checkEdge(pB, pC);
-        checkEdge(pC, pA);
-        
-        if (xmin_scan > xmax_scan) continue;  // Geen intersectie
-        
-        // Clamp x-grenzen
-        int xi_min = std::max(0, static_cast<int>(std::floor(xmin_scan)));
-        int xi_max = std::min(img_width - 1, static_cast<int>(std::ceil(xmax_scan)));
-        
-        // 6. Teken alle pixels op deze scanline
-        for (int xi = xi_min; xi <= xi_max; ++xi) {
-            double x = xi + 0.5;  // Pixel center
-            
-            // Bereken barycentrische coördinaten (λA, λB, λC)
-            double lambda_A = ((pB.y - pC.y) * (x - pC.x) + (pC.x - pB.x) * (y - pC.y)) / denom;
-            double lambda_B = ((pC.y - pA.y) * (x - pC.x) + (pA.x - pC.x) * (y - pC.y)) / denom;
-            double lambda_C = 1.0 - lambda_A - lambda_B;
-            
-            // Check of punt binnen driehoek ligt
-            if (lambda_A < 0 || lambda_B < 0 || lambda_C < 0) continue;
-            
-            // Interpoleer 1/z waarde
-            double inv_z = lambda_A * pA.inv_z + lambda_B * pB.inv_z + lambda_C * pC.inv_z;
-            
-            // Z-buffer test
-            if (inv_z < zbuffer.get_value(xi, yi)) {
-                zbuffer.set_value(xi, yi, inv_z);
-                image(xi, yi) = img_color;
+
+    const double dzdx = w.x / (-d * k);
+    const double dzdy = w.y / (-d * k);
+    const double xG = (pA.x + pB.x + pC.x) / 3.0;
+    const double yG = (pA.y + pB.y + pC.y) / 3.0;
+    const double invZG = (1.0 / A.z + 1.0 / B.z + 1.0 / C.z) / 3.0;
+
+    const img::Color imgColor(
+        static_cast<uint8_t>(std::round(std::clamp(color.red,   0.0, 1.0) * 255.0)),
+        static_cast<uint8_t>(std::round(std::clamp(color.green, 0.0, 1.0) * 255.0)),
+        static_cast<uint8_t>(std::round(std::clamp(color.blue,  0.0, 1.0) * 255.0))
+    );
+
+    for (int y = yMin; y <= yMax; ++y) {
+        std::vector<double> xs;
+        xs.reserve(3);
+        double x;
+        if (edgeIntersectionX(pA, pB, y, x)) xs.push_back(x);
+        if (edgeIntersectionX(pA, pC, y, x)) xs.push_back(x);
+        if (edgeIntersectionX(pB, pC, y, x)) xs.push_back(x);
+        if (xs.size() < 2) continue;
+
+        const auto [minIt, maxIt] = std::minmax_element(xs.begin(), xs.end());
+        int xMin = static_cast<int>(std::round(*minIt + 0.5));
+        int xMax = static_cast<int>(std::round(*maxIt - 0.5));
+        xMin = std::max(0, xMin);
+        xMax = std::min(width - 1, xMax);
+        if (xMin > xMax) continue;
+
+        for (int xPix = xMin; xPix <= xMax; ++xPix) {
+            const double invZ = 1.0001 * invZG + (static_cast<double>(xPix) - xG) * dzdx + (static_cast<double>(y) - yG) * dzdy;
+            if (invZ < zbuffer.get_value(static_cast<unsigned int>(xPix), static_cast<unsigned int>(y))) {
+                zbuffer.set_value(static_cast<unsigned int>(xPix), static_cast<unsigned int>(y), invZ);
+                image(static_cast<unsigned int>(xPix), static_cast<unsigned int>(y)) = imgColor;
             }
         }
     }

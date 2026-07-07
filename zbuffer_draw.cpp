@@ -137,19 +137,30 @@ img::EasyImage DrawZBuffered(
         return img::EasyImage(width, height, background); // Retourneer een lege afbeelding
     }
 
-    // Schaal aanpassen aan de kleinste dimensie
-    // Let op: de schaalfactor 'd' hier is om de geprojecteerde coördinaten te mappen naar de gewenste afbeeldinggrootte.
-    // De 'd' in de projectieformule in projectPointWithZ was 1.0.
-    double d = 0.95 * std::max(width, height) / std::max(xrange, yrange);
-    double xmid = (xmin + xmax) / 2.0;
-    double ymid = (ymin + ymax) / 2.0;
+    // Gebruik exact dezelfde 2D normalisatie als wireframe_draw::Draw.
+    // De referentie centreert op de onafgeronde beeldafmetingen imagex/imagey;
+    // centreren op width/height verschuift dichte kegel/torus-lijnen net genoeg
+    // om veel pixels 1 positie fout te zetten.
+    const double maxRange = std::max(xrange, yrange);
+    const double d = 0.95 * std::max(width, height) / maxRange;
+    const double xmid = (xmin + xmax) / 2.0;
+    const double ymid = (ymin + ymax) / 2.0;
+    const double imagex = std::max(width, height) * (xrange / maxRange);
+    const double imagey = std::max(width, height) * (yrange / maxRange);
+
+    auto tx = [&](double x) {
+        return std::clamp((x - xmid) * d + width / 2.0, 0.0, double(width - 1));
+    };
+    auto ty = [&](double y) {
+        return std::clamp((y - ymid) * d + height / 2.0, 0.0, double(height - 1));
+    };
 
     // Pas de transformatie toe en teken de lijnen
     for (auto &line : lines) {
-        long X1 = static_cast<long>(std::round((line.p1.x - xmid) * d + width / 2.0));
-        long Y1 = static_cast<long>(std::round((line.p1.y - ymid) * d + height / 2.0));
-        long X2 = static_cast<long>(std::round((line.p2.x - xmid) * d + width / 2.0));
-        long Y2 = static_cast<long>(std::round((line.p2.y - ymid) * d + height / 2.0));
+        long X1 = static_cast<long>(std::round(tx(line.p1.x)));
+        long Y1 = static_cast<long>(std::round(ty(line.p1.y)));
+        long X2 = static_cast<long>(std::round(tx(line.p2.x)));
+        long Y2 = static_cast<long>(std::round(ty(line.p2.y)));
 
         // Roep de Z-buffered lijntekenfunctie aan
         draw_zbuf_line(zbuffer, image, X1, Y1, line.z1, X2, Y2, line.z2, line.color);
