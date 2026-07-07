@@ -13,7 +13,9 @@
 
 class FloatColor {
 public:
-    double red, green, blue;
+    double red = 0.0;
+    double green = 0.0;
+    double blue = 0.0;
 };
 
 class Point2D {
@@ -46,8 +48,29 @@ public:
     std::vector<Vector3D> points;
     /// Vlakken (voor nu altijd 2 indices)
     std::vector<Face>     faces;
-    /// Kleur van de lijnen
+    /// Kleur van de lijnen / vlakke kleur bij oude opdrachten
     FloatColor            color;
+
+    /// Materiaaleigenschappen voor belichting.
+    FloatColor            ambientReflection;
+    FloatColor            diffuseReflection;
+    FloatColor            specularReflection;
+    double                reflectionCoefficient = 0.0;
+};
+
+/// Lichtbron voor LightedZBuffering.
+class Light {
+public:
+    FloatColor ambientLight;
+    FloatColor diffuseLight;
+    FloatColor specularLight;
+
+    bool infinity = true;
+    Vector3D direction = Vector3D::vector(0.0, 0.0, -1.0);
+    Vector3D location = Vector3D::point(0.0, 0.0, 0.0);
+
+    bool hasSpotAngle = false;
+    double spotCos = -1.0;
 };
 
 /// Al je 3D‐figuren in één scène

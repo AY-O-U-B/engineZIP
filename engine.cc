@@ -175,6 +175,9 @@ img::EasyImage generate_image(const ini::Configuration &configuration) {
     else if (type == "ZBuffering") {
         return wireframe_engine::buildZBufferedTriangles(configuration);
     }
+    else if (type == "LightedZBuffering") {
+        return wireframe_engine::buildLightedZBufferedTriangles(configuration);
+    }
     else {
         std::cerr << "Fout: onbekend type '" << type << "'\n";
         return img::EasyImage();

@@ -33,10 +33,32 @@ img::Color toImageColor(const std::vector<double>& rgb) {
     );
 }
 
+FloatColor tupleToFloatColor(const std::vector<double>& rgb) {
+    FloatColor c;
+    c.red   = rgb.size() > 0 ? rgb[0] : 0.0;
+    c.green = rgb.size() > 1 ? rgb[1] : 0.0;
+    c.blue  = rgb.size() > 2 ? rgb[2] : 0.0;
+    return c;
+}
+
 void setFigureColor(Figure3D& fig, const std::vector<double>& rgb) {
-    fig.color.red   = rgb[0];
-    fig.color.green = rgb[1];
-    fig.color.blue  = rgb[2];
+    fig.color = tupleToFloatColor(rgb);
+}
+
+void setFigureMaterialFromColor(Figure3D& fig, const std::vector<double>& rgb) {
+    setFigureColor(fig, rgb);
+    fig.ambientReflection = fig.color;
+    fig.diffuseReflection = FloatColor{};
+    fig.specularReflection = FloatColor{};
+    fig.reflectionCoefficient = 0.0;
+}
+
+Vector3D safeNormaliseVector(const Vector3D& v) {
+    const double len = v.length();
+    if (len < 1e-12) {
+        return Vector3D::vector(0.0, 0.0, 0.0);
+    }
+    return v / len;
 }
 
 
@@ -136,7 +158,7 @@ Figure3D parseFigureByType(const ini::Section& fsec) {
     throw std::runtime_error("Onbekend figuurtype: " + type);
 }
 
-Figures3D parseFigures(const ini::Configuration& config) {
+Figures3D parseFigures(const ini::Configuration& config, bool lighted = false) {
     Figures3D figures;
     const int nrFigures = config["General"]["nrFigures"].as_int_or_die();
 
@@ -146,7 +168,14 @@ Figures3D parseFigures(const ini::Configuration& config) {
         const auto& fsec = config[sectionName.str()];
 
         Figure3D fig = parseFigureByType(fsec);
-        setFigureColor(fig, fsec["color"].as_double_tuple_or_die());
+        if (lighted) {
+            fig.ambientReflection = tupleToFloatColor(fsec["ambientReflection"].as_double_tuple_or_die());
+            fig.diffuseReflection = tupleToFloatColor(fsec["diffuseReflection"].as_double_tuple_or_default({0.0, 0.0, 0.0}));
+            fig.specularReflection = tupleToFloatColor(fsec["specularReflection"].as_double_tuple_or_default({0.0, 0.0, 0.0}));
+            fig.reflectionCoefficient = fsec["reflectionCoefficient"].as_double_or_default(0.0);
+        } else {
+            setFigureMaterialFromColor(fig, fsec["color"].as_double_tuple_or_die());
+        }
 
         // Opgavevolgorde voor rijvectoren: eerst schaal, dan X/Y/Z-rotaties, dan translatie.
         Matrix M = scaleMatrix(fsec["scale"].as_double_or_die());
@@ -278,6 +307,10 @@ struct Triangle3D {
     Vector3D B;
     Vector3D C;
     FloatColor color;
+    FloatColor ambientReflection;
+    FloatColor diffuseReflection;
+    FloatColor specularReflection;
+    double reflectionCoefficient = 0.0;
 };
 
 std::vector<Triangle3D> collectTriangles(const Figures3D& figures) {
@@ -292,7 +325,11 @@ std::vector<Triangle3D> collectTriangles(const Figures3D& figures) {
                 fig.points[tri.point_indexes[0]],
                 fig.points[tri.point_indexes[1]],
                 fig.points[tri.point_indexes[2]],
-                fig.color
+                fig.color,
+                fig.ambientReflection,
+                fig.diffuseReflection,
+                fig.specularReflection,
+                fig.reflectionCoefficient
             });
         }
     }
@@ -328,6 +365,45 @@ bool computeTriangleProjectionBounds(const std::vector<Triangle3D>& triangles,
     return std::isfinite(xmin) && std::isfinite(xmax) && std::isfinite(ymin) && std::isfinite(ymax)
            && xmax > xmin && ymax > ymin;
 }
+std::vector<Light> parseLights(const ini::Configuration& config, const Matrix& eyeMatrix) {
+    std::vector<Light> lights;
+    const int nrLights = config["General"]["nrLights"].as_int_or_default(0);
+    lights.reserve(std::max(0, nrLights));
+
+    for (int i = 0; i < nrLights; ++i) {
+        std::ostringstream sectionName;
+        sectionName << "Light" << i;
+        const auto& lsec = config[sectionName.str()];
+
+        Light light;
+        light.ambientLight = tupleToFloatColor(lsec["ambientLight"].as_double_tuple_or_default({0.0, 0.0, 0.0}));
+        light.diffuseLight = tupleToFloatColor(lsec["diffuseLight"].as_double_tuple_or_default({0.0, 0.0, 0.0}));
+        light.specularLight = tupleToFloatColor(lsec["specularLight"].as_double_tuple_or_default({0.0, 0.0, 0.0}));
+        light.infinity = lsec["infinity"].as_bool_or_default(true);
+
+        if (light.infinity) {
+            auto dir = lsec["direction"].as_double_tuple_or_default({0.0, 0.0, -1.0});
+            light.direction = Vector3D::vector(dir[0], dir[1], dir[2]);
+            light.direction *= eyeMatrix;
+            light.direction = -safeNormaliseVector(light.direction);
+        } else {
+            auto loc = lsec["location"].as_double_tuple_or_default({0.0, 0.0, 0.0});
+            light.location = Vector3D::point(loc[0], loc[1], loc[2]);
+            light.location *= eyeMatrix;
+
+            const double spotAngle = lsec["spotAngle"].as_double_or_default(-1.0);
+            if (spotAngle >= 0.0) {
+                light.hasSpotAngle = true;
+                light.spotCos = std::cos(spotAngle * M_PI / 180.0);
+            }
+        }
+
+        lights.push_back(light);
+    }
+
+    return lights;
+}
+
 
 } // namespace
 
@@ -402,6 +478,62 @@ img::EasyImage buildZBufferedTriangles(const ini::Configuration& config) {
 
     for (const auto& tri : triangles) {
         draw_zbuf_triag(zbuffer, image, tri.A, tri.B, tri.C, d, dx, dy, tri.color);
+    }
+
+    return image;
+}
+
+img::EasyImage buildLightedZBufferedTriangles(const ini::Configuration& config) {
+    const int size = config["General"]["size"].as_int_or_die();
+    const img::Color background = toImageColor(config["General"]["backgroundcolor"].as_double_tuple_or_die());
+    auto eyeTuple = config["General"]["eye"].as_double_tuple_or_die();
+    const Vector3D eye = Vector3D::point(eyeTuple[0], eyeTuple[1], eyeTuple[2]);
+
+    Figures3D figures = parseFigures(config, true);
+
+    const Matrix eyeMatrix = eyePointTrans(eye);
+    std::vector<Light> lights = parseLights(config, eyeMatrix);
+    for (auto& fig : figures) {
+        applyTransformation(fig, eyeMatrix);
+    }
+
+    const std::vector<Triangle3D> triangles = collectTriangles(figures);
+    if (triangles.empty()) {
+        return img::EasyImage();
+    }
+
+    double xmin, xmax, ymin, ymax;
+    if (!computeTriangleProjectionBounds(triangles, xmin, xmax, ymin, ymax)) {
+        return img::EasyImage();
+    }
+
+    const double xrange = xmax - xmin;
+    const double yrange = ymax - ymin;
+
+    int width;
+    int height;
+    if (xrange >= yrange) {
+        width = size;
+        const double rawHeight = size * (yrange / xrange);
+        height = std::max(1, static_cast<int>(std::ceil(rawHeight - 1e-12)));
+    } else {
+        height = size;
+        const double rawWidth = size * (xrange / yrange);
+        width = std::max(1, static_cast<int>(std::ceil(rawWidth - 1e-12)));
+    }
+
+    const double d = 0.95 * size / std::max(xrange, yrange);
+    const double dx = width / 2.0 - d * (xmin + xmax) / 2.0;
+    const double dy = height / 2.0 - d * (ymin + ymax) / 2.0;
+
+    img::EasyImage image(width, height, background);
+    Zbuffer zbuffer(width, height);
+
+    for (const auto& tri : triangles) {
+        draw_zbuf_triag_lighted(zbuffer, image, tri.A, tri.B, tri.C, d, dx, dy,
+                                tri.ambientReflection, tri.diffuseReflection,
+                                tri.specularReflection, tri.reflectionCoefficient,
+                                lights);
     }
 
     return image;

@@ -12,7 +12,8 @@
 namespace wireframe_engine {
 
     img::EasyImage buildWireframe(const ini::Configuration &config);
-    img::EasyImage buildZBufferedTriangles(const ini::Configuration &config);  // ✅ toegevoegd
+    img::EasyImage buildZBufferedTriangles(const ini::Configuration &config);
+    img::EasyImage buildLightedZBufferedTriangles(const ini::Configuration &config);
 
 } // namespace wireframe_engine
 
