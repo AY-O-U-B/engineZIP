@@ -52,10 +52,17 @@ img::EasyImage Draw(const Lines2D &lines, int size, img::Color bg) {
     double xmid = (xmin + xmax) / 2.0;
     double ymid = (ymin + ymax) / 2.0;
 
+    // Centreer op de ONAFGERONDE beeldafmetingen (imagex/imagey), niet op de
+    // afgeronde width/height. De afronding van width/height verschoof alle
+    // punten een fractie van een pixel; bij dichte, bijna-parallelle lijnen
+    // (kegel, torus) liet dat de SSIM t.o.v. de referentie kelderen.
+    const double imagex = size * (xrange / std::max(xrange, yrange));
+    const double imagey = size * (yrange / std::max(xrange, yrange));
+
     // 5) tekenen
     for (auto &L : lines) {
-        auto tx = [&](double x){ return (x - xmid)*d + width / 2.0; };
-        auto ty = [&](double y){ return (y - ymid)*d + height / 2.0; };
+        auto tx = [&](double x){ return (x - xmid)*d + imagex / 2.0; };
+        auto ty = [&](double y){ return (y - ymid)*d + imagey / 2.0; };
 
         int x1 = int(std::round(std::clamp(tx(L.p1.x), 0.0, double(width-1))));
         int y1 = int(std::round(std::clamp(ty(L.p1.y), 0.0, double(height-1))));
